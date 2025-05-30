@@ -106,6 +106,7 @@ async function verseLookup() {
             .then(response => response.json())
             .then(data => {
                 const retVar = data.passages.join("");
+                console.log(retVar);
                 document.getElementById("verse").innerHTML = retVar;
                 searchHistory.add(data.query);
                 createHistory();
