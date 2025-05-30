@@ -105,7 +105,8 @@ async function verseLookup() {
         fetch(url)
             .then(response => response.json())
             .then(data => {
-                document.getElementById("verse").innerHTML = data.passages.join("");
+                const retVar = data.passages.join("");
+                document.getElementById("verse").innerHTML = retVar;
                 searchHistory.add(data.query);
                 createHistory();
                 wrapText();
