@@ -1,6 +1,6 @@
 var allowHighlighting = false;
 var buttonClicked = "";
-var hightlightColor = "";
+var highlightColor = "";
 const highlightColors = [
     "bg-red-600",
     "bg-orange-600",
@@ -22,8 +22,8 @@ const highlightColors = [
 
 // Highlighted Verses, tuple of verse number and color
 var highlightedVerses = {
-    "v43003017": "bg-lime-600", 
-    "v43003019": "bg-blue-600", 
+    "v43003017": "bg-lime-600",
+    "v43003019": "bg-blue-600",
     "v43003021": "bg-pink-600"
 };
 
@@ -57,7 +57,7 @@ themeToggleBtn.addEventListener('click', function() {
             localStorage.setItem('color-theme', 'light');
         }
 
-    // if NOT set via local storage previously
+        // if NOT set via local storage previously
     } else {
         if (document.documentElement.classList.contains('dark')) {
             document.documentElement.classList.remove('dark');
@@ -67,16 +67,16 @@ themeToggleBtn.addEventListener('click', function() {
             localStorage.setItem('color-theme', 'dark');
         }
     }
-    
+
 });
 
 
 const searchHistory = new Set();
 
 function addHistoryItem(verse) {
-    document.getElementById("history").innerHTML += "<div class=\"history-item\">" + 
-    "<button class=\"cursor-pointer underline\" onclick=\"useHistory('" + verse + "')\" >" + verse + "</button>"
-    + "</div>";
+    document.getElementById("history").innerHTML += "<div class=\"history-item\">" +
+        "<button class=\"cursor-pointer underline\" onclick=\"useHistory('" + verse + "')\" >" + verse + "</button>"
+        + "</div>";
 }
 
 function createHistory() {
@@ -106,18 +106,18 @@ async function verseLookup() {
             .then(response => response.json())
             .then(data => {
                 const retVar = data.passages.join("");
-                console.log(retVar);
+                //console.log(retVar);
                 document.getElementById("verse").innerHTML = retVar;
                 searchHistory.add(data.query);
                 createHistory();
                 wrapText();
-        });
+            });
     } else if (verse.match(/romans road/i) || verse.match(/roman's road/i)) {
         document.getElementById("verse").innerHTML = "<h1>The Romans Road to Salvation</h1>";
         let verses = [
-            "Romans 3:23", 
-            "Romans 3:12", 
-            "Romans 5:10", 
+            "Romans 3:23",
+            "Romans 3:12",
+            "Romans 5:10",
             "Romans 6:23",
             "Romans 5:8",
             "Romans 10:9-10",
@@ -153,12 +153,12 @@ async function verseLookup() {
                 createHistory();
             });
     }
-    window.scrollTo(0,0);
+    window.scrollTo(0, 0);
 }
 
 
 async function getDataInOrder(verses) {
-    const promises = verses.map(verse => {
+    const promises = verses.map(async (verse) => {
         let url = "/api?verse=" + verse + "&headings=false&extras=false&numbers=false";
         return fetch(url).then(response => response.json());
     });
@@ -178,89 +178,73 @@ inputField.addEventListener('keydown', function(event) {
 });
 
 
-
-
 function wrapText() {
-    const anchors = document.querySelectorAll("a.va");
-    anchors.forEach((anchor) => {
-        const wrapper = document.createElement("span");
-        wrapper.classList.add("verse");
-        const verseId = anchor.getAttribute("rel"); // e.g., "v40001007"
-        if (verseId) {
-            wrapper.setAttribute("data-verse", verseId);
-        }
-
-        let current = anchor;
-        const parent = anchor.parentNode;
-
-        // Add the anchor itself to the wrapper
-        wrapper.appendChild(current.cloneNode(true));
-        let next = current.nextSibling;
-
-        // Wrap content until the next anchor
-        while (next && !(next.nodeType === 1 &&
-            (next.matches("a.va")
-                || next.classList.contains("verse-num")
-                || next.tagName.toLowerCase() === "p"))) {
-            const sibling = next.nextSibling;
-            wrapper.appendChild(next);
-            next = sibling;
-        }
-        // Insert the wrapper before the anchor, then remove the original
-        parent.insertBefore(wrapper, anchor);
-        anchor.remove();
-
-        // Add click-to-highlight functionality
-        wrapper.addEventListener("click", () => {
-            highlightWrapper(wrapper, hightlightColor);
-            var verseId = wrapper.getAttribute("data-verse");
-
-            if (highlightedVerses[verseId] && highlightedVerses[verseId] === hightlightColor) {
-                delete highlightedVerses[verseId];
-            } else {
-                highlightedVerses[verseId] = hightlightColor;
-            }
-
+    document.querySelectorAll("span.verse").forEach((span) => {
+        const verseID = span.getAttribute("data-verse");
+        span.addEventListener("click", (e) => {
+            // Read the verse ID from the data-verse attribute
+            // Assume highlightColor is set elsewhere in your script
+            highlightVerseByID(verseID, highlightColor);
         });
-
-
         // Check if the verse is in the highlightedVerses array
-        if (highlightedVerses[verseId]) {
-            console.log("Highlighting verse:", verseId);
-            allowHighlighting = true;
-            highlightWrapper(wrapper, highlightedVerses[verseId]);
-            allowHighlighting = false;
+        if (highlightedVerses[verseID]) {
+            //console.log("Highlighting verse:", verseID);
+            if (allowHighlighting) {
+                highlightWrapper(span, highlightedVerses[verseID]);
+            } else {
+                allowHighlighting = true;
+                highlightWrapper(span, highlightedVerses[verseID]);
+                allowHighlighting = false;
+            }
         }
-
-
-
     });
+}
 
+
+/**
+ * Finds all <span class="verse" data-verse="..."> elements matching the given verseID
+ * and applies highlightWrapper to each.
+ *
+ * @param {string} verseID        The verse ID to look for (e.g. "v45003010").
+ * @param {string} highlightColor The CSS class name that highlightWrapper should apply.
+ */
+function highlightVerseByID(verseID, highlightColor) {
+    // Construct a selector for all <span class="verse" data-verse="verseID">
+    const selector = `span.verse[data-verse="${verseID}"]`;
+    const wrappers = document.querySelectorAll(selector);
+
+    wrappers.forEach((wrapper) => {
+        highlightWrapper(wrapper, highlightColor);
+    });
 
 }
 
-function highlightWrapper(wrapper, hightlightColor) {
+
+function highlightWrapper(wrapper, highlightColor) {
     const children = wrapper.children;
+    const verseID = wrapper.getAttribute("data-verse");
     if (allowHighlighting) {
-        if (hasClass(wrapper, hightlightColor)) {
-            removeClass(wrapper, hightlightColor);
+        if (hasClass(wrapper, highlightColor)) {
+            removeClass(wrapper, highlightColor);
             for (child of children) {
-                if(hasClass(child, "woc-highlighted")) {
+                if (hasClass(child, "woc-highlighted")) {
                     removeClass(child, "woc-highlighted");
                     addClass(child, "woc");
                 }
             }
+            delete highlightedVerses[verseID];
         } else {
             highlightColors.forEach((color) => {
                 removeClass(wrapper, color);
             });
-            addClass(wrapper, hightlightColor);
+            addClass(wrapper, highlightColor);
             for (child of children) {
-                if(hasClass(child, "woc")) {
+                if (hasClass(child, "woc")) {
                     removeClass(child, "woc");
                     addClass(child, "woc-highlighted");
                 }
             }
+            highlightedVerses[verseID] = highlightColor;
         }
     }
 }
@@ -282,8 +266,8 @@ function HighlightButtonClicked(me) {
 
         buttonClicked = me.id;
         allowHighlighting = true;
-        hightlightColor = "bg-" + me.id.split("-")[1] + "-600";
-        //console.log(hightlightColor);
+        highlightColor = "bg-" + me.id.split("-")[1] + "-600";
+        //console.log(highlightColor);
 
     }
 }
