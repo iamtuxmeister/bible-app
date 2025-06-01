@@ -177,102 +177,23 @@ func ApiRequestHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(result)
-	//w.Write([]byte("<html><head><meta charset=\"UTF-8\"></head><body>"))
-	//for _, str := range result.Passages {
-	//	_, err := w.Write([]byte(str + "\n")) // Add newline for separation
-	//	if err != nil {
-	//		http.Error(w, "Error writing to response", http.StatusInternalServerError)
-	//		return
-	//	}
-	//log.Println(str)
-	//}
-	//w.Write([]byte("</body></html>"))
-
 }
 
-// func wrapVerses(htmlInput string) (string, error) {
-// 	doc, err := html.Parse(strings.NewReader(htmlInput))
-// 	if err != nil {
-// 		return "", err
-// 	}
-//
-// 	var traverse func(n *html.Node)
-// 	traverse = func(n *html.Node) {
-// 		for c := n.FirstChild; c != nil; {
-// 			next := c.NextSibling
-//
-// 			if isVerseAnchorNode(c) {
-// 				verseID := getVerseID(c)
-// 				var nodesToWrap []*html.Node
-// 				nodesToWrap = append(nodesToWrap, c)
-//
-// 				sib := c.NextSibling
-// 				for sib != nil {
-// 					// Stop if next anchor or next verse number is found
-// 					if isVerseAnchorNode(sib) || isVerseNumberNode(sib) {
-// 						break
-// 					}
-// 					nodesToWrap = append(nodesToWrap, sib)
-// 					sib = sib.NextSibling
-// 				}
-// 				span := &html.Node{
-// 					Type: html.ElementNode,
-// 					Data: "span",
-// 					Attr: []html.Attribute{
-// 						{Key: "class", Val: "verse"},
-// 						{Key: "data-verse", Val: verseID},
-// 					},
-// 				}
-//
-// 				for _, node := range nodesToWrap {
-// 					if node.Parent != nil {
-// 						node.Parent.RemoveChild(node)
-// 					}
-// 					span.AppendChild(node)
-// 				}
-//
-// 				n.InsertBefore(span, sib)
-// 				c = span.NextSibling // continue after the inserted span
-// 			} else {
-// 				traverse(c)
-// 				c = next
-// 			}
-// 		}
-// 	}
-//
-// 	traverse(doc)
-//
-// 	var buf bytes.Buffer
-// 	if err := html.Render(&buf, doc); err != nil {
-// 		return "", err
-// 	}
-// 	return buf.String(), nil
-// }
-
-// ----------------------------
-// wrapInlineVersesInNode handles a generic element (e.g. <p>, but we skip <h3> now).
-//
-// It scans its direct children. Whenever it sees <a class="va" rel="vXXXXX">, it pulls
-// that <a> into the output and then collects all subsequent siblings (text, <sup>, etc.)
-// up to—but not including—the next verse‐anchor or next verse‐number <b>. Those collected
-// nodes become the contents of one <span class="verse" data-verse="vXXXXX">…</span>. A
-// verse‐number <b> always flushes any span under construction (closing it) and is itself
-// emitted directly (not wrapped). All other nodes pass through unchanged.
 func wrapInlineVersesInNode(n *html.Node) {
-	// 1) Collect original children in a slice
+	// 1) Gather original children
 	var origChildren []*html.Node
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		origChildren = append(origChildren, c)
 	}
 
-	// 2) Build a new list "rebuilt" to replace n’s children
+	// 2) Rebuild
 	var rebuilt []*html.Node
 	i := 0
 	for i < len(origChildren) {
 		ch := origChildren[i]
 
 		switch {
-		// A) If it’s a verse‐number <b class="verse-num">…</b>, emit it as‐is
+		// A) verse‐number <b class="verse-num">…</b>: emit as‐is
 		case isVerseNumberNode(ch):
 			if ch.Parent != nil {
 				ch.Parent.RemoveChild(ch)
@@ -280,29 +201,77 @@ func wrapInlineVersesInNode(n *html.Node) {
 			rebuilt = append(rebuilt, ch)
 			i++
 
-		// B) If it’s a verse anchor <a class="va" rel="vXXXXX">…</a>:
+		// B) verse anchor <a class="va" rel="vXXXX">…</a>:
 		case isVerseAnchorNode(ch):
-			// 1) Remove it from its parent and append to rebuilt
+			// 1) emit the anchor node itself
 			if ch.Parent != nil {
 				ch.Parent.RemoveChild(ch)
 			}
 			rebuilt = append(rebuilt, ch)
 
-			// 2) Record verseID
+			// 2) record verseID
 			verseID := getVerseID(ch)
+			i++
 
-			// 3) Collect all siblings until next anchor or verse‐number
-			j := i + 1
+			// 3) now collect everything that belongs to this verse, splitting
+			//    at any <sup class="footnote">…</sup>.
 			var toWrap []*html.Node
-			for ; j < len(origChildren); j++ {
-				sib := origChildren[j]
+			for i < len(origChildren) {
+				sib := origChildren[i]
+
+				// If we hit a *new* anchor or a verse‐number, stop collecting:
 				if isVerseAnchorNode(sib) || isVerseNumberNode(sib) {
 					break
 				}
+
+				// If we see a <sup class="footnote">…</sup>, flush current span,
+				// emit the <sup> unwrapped, then continue a fresh span for same verseID.
+				if sib.Type == html.ElementNode && sib.Data == "sup" {
+					// Check for class="footnote"
+					hasFoot := false
+					for _, a := range sib.Attr {
+						if a.Key == "class" && strings.Contains(a.Val, "footnote") {
+							hasFoot = true
+							break
+						}
+					}
+					if hasFoot {
+						// (a) flush any collected nodes so far:
+						if len(toWrap) > 0 {
+							spanNode := &html.Node{
+								Type: html.ElementNode,
+								Data: "span",
+								Attr: []html.Attribute{
+									{Key: "class", Val: "verse"},
+									{Key: "data-verse", Val: verseID},
+								},
+							}
+							for _, w := range toWrap {
+								if w.Parent != nil {
+									w.Parent.RemoveChild(w)
+								}
+								spanNode.AppendChild(w)
+							}
+							rebuilt = append(rebuilt, spanNode)
+							toWrap = nil
+						}
+						// (b) emit the <sup> itself unwrapped:
+						if sib.Parent != nil {
+							sib.Parent.RemoveChild(sib)
+						}
+						rebuilt = append(rebuilt, sib)
+						i++
+						// continue collecting into a fresh toWrap for the SAME verseID:
+						continue
+					}
+				}
+
+				// Otherwise, it's normal text/​element for this verse. Collect it:
 				toWrap = append(toWrap, sib)
+				i++
 			}
 
-			// 4) If any nodes to wrap, create <span class="verse" data-verse="…">…</span>
+			// 4) once we exit that loop, if toWrap is non‐empty, flush it as a <span>:
 			if len(toWrap) > 0 {
 				spanNode := &html.Node{
 					Type: html.ElementNode,
@@ -320,9 +289,8 @@ func wrapInlineVersesInNode(n *html.Node) {
 				}
 				rebuilt = append(rebuilt, spanNode)
 			}
-			i = j
 
-		// C) Otherwise, pass through
+		// C) anything else: emit unchanged
 		default:
 			if ch.Parent != nil {
 				ch.Parent.RemoveChild(ch)
@@ -332,7 +300,7 @@ func wrapInlineVersesInNode(n *html.Node) {
 		}
 	}
 
-	// 3) Replace n’s old children with rebuilt list
+	// 3) Replace n’s children with rebuilt list
 	for old := n.FirstChild; old != nil; old = n.FirstChild {
 		n.RemoveChild(old)
 	}
@@ -341,11 +309,6 @@ func wrapInlineVersesInNode(n *html.Node) {
 	}
 }
 
-// -------------------
-// wrapInlineVersesInIndentBlock handles <p class="block-indent">.
-//
-// It looks for each <span class="line"> or <span class="indent line"> inside it,
-// and calls wrapInlineVersesInNode on those spans. Everything else is untouched.
 func wrapInlineVersesInIndentBlock(p *html.Node) {
 	for c := p.FirstChild; c != nil; c = c.NextSibling {
 		if c.Type == html.ElementNode && c.Data == "span" {
@@ -359,9 +322,6 @@ func wrapInlineVersesInIndentBlock(p *html.Node) {
 	}
 }
 
-// -------------------
-// wrapVerses: traverses the entire document, but only applies wrapping inside <p> (and indent).
-// <h3> is skipped entirely (no wrapping inside).
 func wrapVerses(htmlInput string) (string, error) {
 	// 1) Parse into a full document tree
 	doc, err := html.Parse(strings.NewReader(htmlInput))
@@ -470,264 +430,3 @@ func getVerseID(n *html.Node) string {
 	}
 	return ""
 }
-
-// func wrapVerses(htmlInput string) (string, error) {
-// 	// Determines end of a verse section
-// 	isEndOfVerse := func(n *html.Node) bool {
-// 		// Naive check — end at next <b class="verse-num"> or block
-// 		if n.Type == html.ElementNode && n.Data == "b" {
-// 			for _, attr := range n.Attr {
-// 				if attr.Key == "class" && strings.Contains(attr.Val, "verse-num") {
-// 					return true
-// 				}
-// 			}
-// 		}
-// 		if n.Type == html.ElementNode && (n.Data == "p" || n.Data == "div") {
-// 			return true
-// 		}
-// 		return false
-// 	}
-//
-// 	doc, err := html.Parse(strings.NewReader(htmlInput))
-// 	if err != nil {
-// 		return "", err
-// 	}
-//
-// 	var wrapCurrentVerse func(*html.Node)
-// 	var currentVerseID string
-//
-// 	// Buffers for output and verses
-// 	var output bytes.Buffer
-//
-// 	// Walk the DOM and collect verse chunks
-// 	var traverse func(n *html.Node)
-// 	traverse = func(n *html.Node) {
-// 		if n.Type == html.ElementNode && n.Data == "a" {
-// 			var isVa bool
-// 			for _, attr := range n.Attr {
-// 				if attr.Key == "class" && strings.Contains(attr.Val, "va") {
-// 					isVa = true
-// 				}
-// 				if attr.Key == "rel" && strings.HasPrefix(attr.Val, "v") {
-// 					currentVerseID = attr.Val
-// 				}
-// 			}
-// 			if isVa && currentVerseID != "" {
-// 				// Start of verse - wrap next siblings
-// 				wrapCurrentVerse(n)
-// 				currentVerseID = ""
-// 				return
-// 			}
-// 		}
-// 		// Continue traversal
-// 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-// 			traverse(c)
-// 		}
-// 	}
-//
-// 	// Wrap relevant siblings of the <a class="va"...> in a <span>
-// 	wrapCurrentVerse = func(aNode *html.Node) {
-// 		var verseNodes []*html.Node
-//
-// 		// Collect nodes that are part of the verse
-// 		for n := aNode; n != nil; n = n.NextSibling {
-// 			verseNodes = append(verseNodes, n)
-// 			if isEndOfVerse(n) {
-// 				break
-// 			}
-// 		}
-//
-// 		// Build the wrapper <span class="verse" data-verse="..." />
-// 		span := &html.Node{
-// 			Type: html.ElementNode,
-// 			Data: "span",
-// 			Attr: []html.Attribute{
-// 				{Key: "class", Val: "verse"},
-// 				{Key: "data-verse", Val: currentVerseID},
-// 			},
-// 		}
-// 		for _, node := range verseNodes {
-// 			span.AppendChild(node)
-// 		}
-//
-// 		// Replace in the tree
-// 		parent := aNode.Parent
-// 		if parent != nil {
-// 			parent.InsertBefore(span, verseNodes[0])
-// 			for _, node := range verseNodes {
-// 				parent.RemoveChild(node)
-// 			}
-// 		}
-// 	}
-//
-// 	// Traverse and transform the DOM
-// 	traverse(doc)
-//
-// 	// Render the modified DOM back to HTML
-// 	if err := html.Render(&output, doc); err != nil {
-// 		return "", err
-// 	}
-//
-// 	return output.String(), nil
-// }
-
-// func renderToken(tok html.Token) string {
-// 	var buf bytes.Buffer
-// 	node := &html.Node{
-// 		Type: html.ElementNode,
-// 		Data: tok.Data,
-// 		Attr: tok.Attr,
-// 	}
-// 	html.Render(&buf, node)
-// 	return buf.String()
-// }
-//
-// func wrapVerses(htmlInput string) (string, error) {
-// 	tokenizer := html.NewTokenizer(strings.NewReader(htmlInput))
-// 	var output bytes.Buffer
-// 	var verseBuffer bytes.Buffer
-// 	var currentVerseID string
-// 	collecting := false
-//
-// 	flushVerse := func() {
-// 		if currentVerseID != "" {
-// 			output.WriteString(fmt.Sprintf(`<span class="verse" data-verse="%s">%s</span>`, currentVerseID, verseBuffer.String()))
-// 			verseBuffer.Reset()
-// 			currentVerseID = ""
-// 		}
-// 	}
-//
-// 	for {
-// 		tt := tokenizer.Next()
-// 		if tt == html.ErrorToken {
-// 			if tokenizer.Err() == io.EOF {
-// 				flushVerse()
-// 				break
-// 			}
-// 			return "", tokenizer.Err()
-// 		}
-//
-// 		tok := tokenizer.Token()
-//
-// 		if tt == html.StartTagToken && tok.Data == "a" {
-// 			isVa := false
-// 			verseID := ""
-// 			for _, attr := range tok.Attr {
-// 				if attr.Key == "class" && strings.Contains(attr.Val, "va") {
-// 					isVa = true
-// 				}
-// 				if attr.Key == "rel" && strings.HasPrefix(attr.Val, "v") {
-// 					verseID = attr.Val
-// 				}
-// 			}
-// 			if isVa && verseID != "" {
-// 				flushVerse()
-// 				currentVerseID = verseID
-// 				collecting = true
-// 			}
-// 		}
-//
-// 		rendered := renderToken(tok)
-//
-// 		if collecting {
-// 			if tt == html.EndTagToken && (tok.Data == "p" || tok.Data == "div") {
-// 				flushVerse()
-// 				collecting = false
-// 				output.WriteString(rendered)
-// 				continue
-// 			}
-// 			verseBuffer.WriteString(rendered)
-// 		} else {
-// 			output.WriteString(rendered)
-// 		}
-// 	}
-//
-// 	return output.String(), nil
-// }
-
-// func wrapVerses(htmlInput string) (string, error) {
-// 	tokenizer := html.NewTokenizer(strings.NewReader(htmlInput))
-// 	var output bytes.Buffer
-// 	var currentVerseID string
-// 	var collecting bool
-// 	var verseBuffer bytes.Buffer
-//
-// 	flushVerse := func() {
-// 		if currentVerseID != "" {
-// 			output.WriteString(fmt.Sprintf(`<span class="verse" data-verse="%s">%s</span>`, currentVerseID, verseBuffer.String()))
-// 			verseBuffer.Reset()
-// 			currentVerseID = ""
-// 		}
-// 	}
-//
-// 	for {
-// 		tokenType := tokenizer.Next()
-// 		if tokenType == html.ErrorToken {
-// 			err := tokenizer.Err()
-// 			if err == io.EOF {
-// 				flushVerse()
-// 				break
-// 			}
-// 			return "", err
-// 		}
-//
-// 		tok := tokenizer.Token()
-//
-// 		if tokenType == html.StartTagToken && tok.Data == "a" {
-// 			// Check if this is a verse anchor
-// 			isVa := false
-// 			for _, attr := range tok.Attr {
-// 				if attr.Key == "class" && strings.Contains(attr.Val, "va") {
-// 					isVa = true
-// 				}
-// 			}
-// 			if isVa {
-// 				// Extract verse ID
-// 				for _, attr := range tok.Attr {
-// 					if attr.Key == "rel" && strings.HasPrefix(attr.Val, "v") {
-// 						flushVerse()
-// 						currentVerseID = attr.Val // Remove the leading "v"
-// 						collecting = true
-// 						break
-// 					}
-// 				}
-// 			}
-// 		}
-//
-// 		// Buffer or write depending on state
-// 		rendered := renderToken(tok)
-// 		if collecting {
-// 			verseBuffer.WriteString(rendered)
-// 		} else {
-// 			output.WriteString(rendered)
-// 		}
-// 	}
-// 	return output.String(), nil
-// }
-
-// func renderToken(tok html.Token) string {
-// 	var b strings.Builder
-// 	switch tok.Type {
-// 	case html.StartTagToken:
-// 		b.WriteString("<" + tok.Data)
-// 		for _, attr := range tok.Attr {
-// 			b.WriteString(fmt.Sprintf(` %s="%s"`, attr.Key, attr.Val))
-// 		}
-// 		b.WriteString(">")
-// 	case html.EndTagToken:
-// 		b.WriteString("</" + tok.Data + ">")
-// 	case html.SelfClosingTagToken:
-// 		b.WriteString("<" + tok.Data)
-// 		for _, attr := range tok.Attr {
-// 			b.WriteString(fmt.Sprintf(` %s="%s"`, attr.Key, attr.Val))
-// 		}
-// 		b.WriteString(" />")
-// 	case html.TextToken:
-// 		b.WriteString(tok.Data)
-// 	case html.CommentToken:
-// 		b.WriteString("<!--" + tok.Data + "-->")
-// 	case html.DoctypeToken:
-// 		b.WriteString("<!DOCTYPE " + tok.Data + ">")
-// 	}
-// 	return b.String()
-// }
