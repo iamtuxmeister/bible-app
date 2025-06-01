@@ -179,6 +179,8 @@ func ApiRequestHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+
+
 func wrapInlineVersesInNode(n *html.Node) {
 	// 1) Gather original children
 	var origChildren []*html.Node
@@ -189,6 +191,7 @@ func wrapInlineVersesInNode(n *html.Node) {
 	// 2) Rebuild
 	var rebuilt []*html.Node
 	i := 0
+
 	for i < len(origChildren) {
 		ch := origChildren[i]
 
@@ -203,7 +206,7 @@ func wrapInlineVersesInNode(n *html.Node) {
 
 		// B) verse anchor <a class="va" rel="vXXXX">…</a>:
 		case isVerseAnchorNode(ch):
-			// 1) emit the anchor node itself
+			// 1) emit the anchor itself
 			if ch.Parent != nil {
 				ch.Parent.RemoveChild(ch)
 			}
@@ -213,30 +216,28 @@ func wrapInlineVersesInNode(n *html.Node) {
 			verseID := getVerseID(ch)
 			i++
 
-			// 3) now collect everything that belongs to this verse, splitting
-			//    at any <sup class="footnote">…</sup>.
+			// 3) collect everything for this verse, but skip wrapping footnotes
 			var toWrap []*html.Node
+
 			for i < len(origChildren) {
 				sib := origChildren[i]
 
-				// If we hit a *new* anchor or a verse‐number, stop collecting:
+				// Stop if next anchor or next verse‐number
 				if isVerseAnchorNode(sib) || isVerseNumberNode(sib) {
 					break
 				}
 
-				// If we see a <sup class="footnote">…</sup>, flush current span,
-				// emit the <sup> unwrapped, then continue a fresh span for same verseID.
+				// B1) Direct <sup class="footnote">
 				if sib.Type == html.ElementNode && sib.Data == "sup" {
-					// Check for class="footnote"
-					hasFoot := false
+					isFoot := false
 					for _, a := range sib.Attr {
 						if a.Key == "class" && strings.Contains(a.Val, "footnote") {
-							hasFoot = true
+							isFoot = true
 							break
 						}
 					}
-					if hasFoot {
-						// (a) flush any collected nodes so far:
+					if isFoot {
+						// (a) flush current toWrap into a <span class="verse">
 						if len(toWrap) > 0 {
 							spanNode := &html.Node{
 								Type: html.ElementNode,
@@ -255,23 +256,133 @@ func wrapInlineVersesInNode(n *html.Node) {
 							rebuilt = append(rebuilt, spanNode)
 							toWrap = nil
 						}
-						// (b) emit the <sup> itself unwrapped:
+						// (b) emit the <sup> itself unwrapped, in correct order
 						if sib.Parent != nil {
 							sib.Parent.RemoveChild(sib)
 						}
 						rebuilt = append(rebuilt, sib)
 						i++
-						// continue collecting into a fresh toWrap for the SAME verseID:
 						continue
 					}
 				}
 
-				// Otherwise, it's normal text/​element for this verse. Collect it:
+				// B2) <span class="woc">…</span> (may contain footnotes inside)
+				if sib.Type == html.ElementNode && sib.Data == "span" {
+					isWoc := false
+					for _, a := range sib.Attr {
+						if a.Key == "class" && strings.Contains(a.Val, "woc") {
+							isWoc = true
+							break
+						}
+					}
+					if isWoc {
+						// We'll break this woc into sub‐pieces
+						// (a) iterate inner children in order, splitting out footnotes
+						var innerToWrap []*html.Node
+						for gc := sib.FirstChild; gc != nil; {
+							nextGC := gc.NextSibling
+							// If gc is a sup.footnote
+							if gc.Type == html.ElementNode && gc.Data == "sup" {
+								isFoot := false
+								for _, a := range gc.Attr {
+									if a.Key == "class" && strings.Contains(a.Val, "footnote") {
+										isFoot = true
+										break
+									}
+								}
+								if isFoot {
+									// i) flush any accumulated innerToWrap as a new <span class="woc">
+									if len(innerToWrap) > 0 {
+										// build a new woc span containing those nodes
+										newWoc := &html.Node{
+											Type: html.ElementNode,
+											Data: "span",
+											Attr: []html.Attribute{
+												{Key: "class", Val: "woc"},
+											},
+										}
+										for _, w := range innerToWrap {
+											if w.Parent != nil {
+												w.Parent.RemoveChild(w)
+											}
+											newWoc.AppendChild(w)
+										}
+										// now that newWoc is footnote-free, add it to toWrap
+										toWrap = append(toWrap, newWoc)
+										innerToWrap = nil
+									}
+									// ii) flush toWrap as verse-span (if any)
+									if len(toWrap) > 0 {
+										spanNode := &html.Node{
+											Type: html.ElementNode,
+											Data: "span",
+											Attr: []html.Attribute{
+												{Key: "class", Val: "verse"},
+												{Key: "data-verse", Val: verseID},
+											},
+										}
+										for _, w := range toWrap {
+											if w.Parent != nil {
+												w.Parent.RemoveChild(w)
+											}
+											spanNode.AppendChild(w)
+										}
+										rebuilt = append(rebuilt, spanNode)
+										toWrap = nil
+									}
+									// iii) emit the footnote sup unwrapped
+									if gc.Parent != nil {
+										gc.Parent.RemoveChild(gc)
+									}
+									rebuilt = append(rebuilt, gc)
+									gc = nextGC
+									continue
+								}
+							}
+
+							// Otherwise, gc is not a footnote: accumulate inside innerToWrap
+							if gc.Parent != nil {
+								gc.Parent.RemoveChild(gc)
+							}
+							innerToWrap = append(innerToWrap, gc)
+							gc = nextGC
+						}
+
+						// (b) after processing all grandchildren of span.woc,
+						//     if any innerToWrap remains, crank out one final newWoc
+						if len(innerToWrap) > 0 {
+							newWoc := &html.Node{
+								Type: html.ElementNode,
+								Data: "span",
+								Attr: []html.Attribute{
+									{Key: "class", Val: "woc"},
+								},
+							}
+							for _, w := range innerToWrap {
+								if w.Parent != nil {
+									w.Parent.RemoveChild(w)
+								}
+								newWoc.AppendChild(w)
+							}
+							toWrap = append(toWrap, newWoc)
+							innerToWrap = nil
+						}
+
+						// (c) remove the original span.woc
+						if sib.Parent != nil {
+							sib.Parent.RemoveChild(sib)
+						}
+						i++
+						continue
+					}
+				}
+
+				// B3) Anything else: just collect under toWrap
 				toWrap = append(toWrap, sib)
 				i++
 			}
 
-			// 4) once we exit that loop, if toWrap is non‐empty, flush it as a <span>:
+			// 4) Flush remaining toWrap as a <span class="verse">
 			if len(toWrap) > 0 {
 				spanNode := &html.Node{
 					Type: html.ElementNode,
@@ -288,9 +399,10 @@ func wrapInlineVersesInNode(n *html.Node) {
 					spanNode.AppendChild(w)
 				}
 				rebuilt = append(rebuilt, spanNode)
+				toWrap = nil
 			}
 
-		// C) anything else: emit unchanged
+		// C) Anything else: emit unchanged
 		default:
 			if ch.Parent != nil {
 				ch.Parent.RemoveChild(ch)
@@ -300,7 +412,7 @@ func wrapInlineVersesInNode(n *html.Node) {
 		}
 	}
 
-	// 3) Replace n’s children with rebuilt list
+	// 5) Replace n’s children with rebuilt list
 	for old := n.FirstChild; old != nil; old = n.FirstChild {
 		n.RemoveChild(old)
 	}
